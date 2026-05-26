@@ -4,6 +4,7 @@ A PyQt6-based dashboard for monitoring and logging CAN bus node telemetry via a 
 
 ## Features
 *   **Live Sensor Monitoring**: Real-time display of node IDs, temperatures (°F/°C), and high/low alarm statuses.
+*   **Hardware Diagnostics**: Detects and displays distinct physical sensor states including Disconnected, Short Circuit, and Stuck front-ends.
 *   **Live Charting**: High-performance real-time plotting of node temperatures using Matplotlib.
 *   **CSV Logging**: Stream telemetry data to a timestamped CSV file for post-analysis.
 *   **Threaded Serial Worker**: Prevents UI freezing by handling serial communications on a separate background `QThread`.
@@ -14,8 +15,8 @@ A PyQt6-based dashboard for monitoring and logging CAN bus node telemetry via a 
 *   **`main.py`**: The simple entry point for the PyQt application.
 *   **`recoder_gui.py`**: Contains the core View and Controller logic. Houses the `NodeStore` (data buffers), `NodeWidget` (UI cards), and `App` (the main window orchestrating the GUI and plots).
 *   **`serial_worker.py`**: Manages the hardware serial port strictly within its own thread loop. Emits PyQt signals whenever new telemetry is fully parsed, ensuring the main UI threading is never blocked by I/O.
-*   **`recoder_processing.py`**: Helper module handling regex parsing of the serial telemetry (`!RX,...` and `[RX]...` strings), error-checking, and temperature math.
-*   **`prj_can_pt/prj_can_pt.ino`**: C++ ESP32 firmware for node simulation and MCP2515 CAN transceiver control.
+*   **`recoder_processing.py`**: Helper module handling regex parsing of the serial telemetry (`!RX,...`, `[RX]...` and `!ERR,...` strings), translating hardware fault hex codes, and error-checking.
+*   **`prj_can_pt/prj_can_pt.ino`**: C++ ESP32 firmware for a hardware temperature sensor node (PT100) using internal ADC, applying moving average filtering, hardware curve-fitting (LUT), and MCP2515 CAN transceiver control.
 
 ## Installation & Requirements
 Requires Python 3.10+ and the following packages:
@@ -79,19 +80,19 @@ graph TD
 ### 2. Component Details & Data Flow
 
 #### A. Hardware Firmware (`prj_can_pt.ino`)
-The ESP32 processes CAN bus messages using the MCP2515 transceiver. When a node detects a message, it extracts the payload (converting binary structural float payloads into human-readable text) and calculates alarm thresholds.
-It outputs minimal telemetry formatting over Serial, e.g., `!RX,0xA1,105.2,FF,00` where:
+The ESP32 processes physical PT100 analog sensor readings and transmits them as CAN bus messages using the MCP2515 transceiver. When a node detects a message, it extracts the payload and calculates alarm thresholds or determines hardware fault states.
+It outputs minimal telemetry formatting over Serial, e.g., `!RX,0xA1,40.6,FF,00` where:
 * `!RX` signifies a parsed message.
 * `0xA1` is the CAN ID.
-* `105.2` is the data payload (Temperature).
-* `FF/00` indicate high and low hardware alarm flags.
+* `40.6` is the data payload (Temperature in Celsius).
+* `FF/00` indicate high and low hardware alarm flags. (Special note: Identical, non-FF hex values indicate hardware fault states instead; e.g., `11` = DISCONNECTED, `22` = SHORT_CIRCUIT, `33` = STUCK).
 
 #### B. The Serial Worker Thread (`serial_worker.py`)
 Reading from a serial port is a blocking operation. If the Main Thread waits for serial data, the UI will freeze. 
 To solve this, `SerialWorker` lives in an isolated `QThread`.
 1. **Polling:** A `QTimer` fires every 20ms (`50 Hz`), efficiently draining the hardware UART buffer without blocking the CPU.
 2. **Buffering:** It aggregates incomplete bytes until a newline `\n` is found. 
-3. **Parsing:** Complete string lines are passed to `recoder_processing.py`, which validates them using Regex and packages the data into a standard Python Dictionaries.
+3. **Parsing:** Complete string lines are passed to `recoder_processing.py`, which validates them using Regex (including telemetry and explicit `!ERR,...` formats), translates fault states, and packages the data into standard Python Dictionaries.
 4. **Signaling:** The worker fires a `data_ready.emit(parsed)` Qt Signal. Qt's event loop safely catches this and passes it across the thread boundary into the Main Thread.
 
 #### C. Data Model (`NodeStore`)
