@@ -32,26 +32,98 @@ _PORT_PATTERN = re.compile(r"ttyACM\d+|ttyUSB\d+|cu\.usbserial|cu\.SLAB|COM\d+")
 
 
 # ===========================================================================
+# RadialGauge — Vector Data Visualization Component
+# ===========================================================================
+class RadialGauge(QtWidgets.QWidget):
+    """
+    Sleek, circular progress gauge for temperature visualization.
+    """
+    def __init__(self, min_val: float, max_val: float, accent_color: str, parent=None):
+        super().__init__(parent)
+        self.min_val = min_val
+        self.max_val = max_val
+        self.value = min_val
+        self.accent_color = QtGui.QColor(accent_color)
+        # Flag that indicates the last input was out-of-bounds and should
+        # cause the gauge to render fully filled in the critical color.
+        self._out_of_bounds = False
+        self.setMinimumSize(80, 80)
+        self.setMaximumSize(110, 110)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
+
+    def set_value(self, value: float):
+        # Detect out-of-range inputs. If the provided value is outside the
+        # allowed span, mark as out-of-bounds and render as fully filled.
+        if value < self.min_val or value > self.max_val:
+            self._out_of_bounds = True
+            # visually fill the gauge completely
+            self.value = self.max_val
+        else:
+            self._out_of_bounds = False
+            self.value = max(self.min_val, min(self.max_val, value))
+        self.update()
+
+    def set_accent_color(self, color_str: str):
+        target_color = QtGui.QColor(color_str)
+        # Always assign and request a repaint to ensure visual state stays in sync
+        self.accent_color = target_color
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect().adjusted(6, 6, -6, -6)
+        size = min(rect.width(), rect.height())
+        square_rect = QtCore.QRectF(
+            rect.center().x() - size / 2,
+            rect.center().y() - size / 2,
+            size,
+            size
+        )
+
+        # Dynamic theme-aware background track color
+        track_color = self.palette().color(QtGui.QPalette.ColorRole.Midlight)
+        
+        pen = QtGui.QPen()
+        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        pen.setWidth(7)
+
+        # Draw Background Track Arc
+        pen.setColor(track_color)
+        painter.setPen(pen)
+        painter.drawArc(square_rect, 150 * 16, -240 * 16)
+
+        # Calculate range fill percent
+        span = self.max_val - self.min_val
+        percentage = (self.value - self.min_val) / span if span > 0 else 0.0
+        active_span = -240 * percentage * 16
+
+        # Draw Active Visual Value Track
+        if self._out_of_bounds:
+            # Critical deep-red override when input was out-of-range
+            pen.setColor(QtGui.QColor("#8B0000"))
+        else:
+            pen.setColor(self.accent_color)
+        painter.setPen(pen)
+        painter.drawArc(square_rect, 150 * 16, int(active_span))
+
+
+# ===========================================================================
 # NodeStore — data model
 # ===========================================================================
 class NodeStore:
     """
     Manages per-node circular buffers and color assignment.
-
-    Analogy: think of this as the "database" of the app.
-    It knows nothing about Qt widgets or matplotlib.
     """
-
     def __init__(self):
         self.data: dict[str, dict] = {}
 
     def color_for(self, node_id: str) -> str:
-        # Shuffled to maximize hue distance between adjacent indices.
         colors = [
-            "#F44336", "#2196F3", "#8BC34A", "#9C27B0", 
-            "#FF9800", "#00BCD4", "#E91E63", "#4CAF50", 
-            "#3F51B5", "#FF5722", "#009688", "#673AB7", 
-            "#03A9F4"
+            "#F44336", "#2196F3", "#4CAF50", "#9C27B0", 
+            "#FF9800", "#00BCD4", "#E91E63", "#3F51B5", 
+            "#009688", "#673AB7", "#03A9F4"
         ]
         return colors[hash(node_id) % len(colors)]
 
@@ -86,92 +158,126 @@ class NodeStore:
 # ===========================================================================
 class NodeWidget(QtWidgets.QFrame):
     """
-    Card showing live temperature and alarm state for one CAN node.
-    Knows nothing about serial or the store — only its own display state.
+    Card showing live telemetry, interactive gauge, and alarm state for one CAN node.
+    Fully dark/light-theme compatible and vertically adaptive.
     """
-
-    # Single source of truth for alarm badge styling.
-    # Using a class-level template avoids repeating 80-char style strings.
     _BADGE_STYLE = (
-        "background-color: {color}; color: white; border-radius: 16px;"
-        " min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px;"
-        " font-weight: bold; font-size: 14px;"
+        "color: white; border-radius: 11px; min-width: 22px; max-width: 22px;"
+        " min-height: 22px; max-height: 22px; font-weight: bold; font-size: 10px;"
     )
 
-    def __init__(self, node_id: str, color: str):
+    def __init__(self, node_id: str, color: str, display_index: int):
         super().__init__()
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.setMinimumSize(250, 130)
+        self.setMaximumSize(280, 150)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
 
+        self.base_color = color
         qc = QtGui.QColor(color)
-        bg = f"rgba({qc.red()}, {qc.green()}, {qc.blue()}, 0.15)"
+        bg_blend = f"rgba({qc.red()}, {qc.green()}, {qc.blue()}, 0.05)"
+        text_color = self.palette().color(QtGui.QPalette.ColorRole.WindowText).name()
+
         self.setStyleSheet(
-            f"NodeWidget {{ border: 1px solid #c0c0c0; border-radius: 6px;"
-            f" background-color: {bg}; margin: 4px; padding: 4px; }}"
+            f"NodeWidget {{ border: 2px solid {color}; border-radius: 8px;"
+            f" background-color: {bg_blend}; }}"
         )
 
-        layout = QtWidgets.QVBoxLayout(self)
+        # Primary Horizontal Separation: Left Content vs Right Gauge
+        main_layout = QtWidgets.QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 8, 10, 8)
+        main_layout.setSpacing(6)
 
-        # Blend accent color into the text color for the node ID label
-        base = self.palette().color(QtGui.QPalette.ColorRole.WindowText)
-        toned = f"rgba({base.red()}, {base.green()}, {base.blue()}, 0.6)"
-        blended = (
-            f"rgb({int(base.red()*0.3 + qc.red()*0.7)},"
-            f" {int(base.green()*0.3 + qc.green()*0.7)},"
-            f" {int(base.blue()*0.3 + qc.blue()*0.7)})"
-        )
+        # Left Column Layout (Header, Telemetry text, Alarms)
+        left_vbox = QtWidgets.QVBoxLayout()
+        left_vbox.setSpacing(2)
 
-        icon_lbl = QtWidgets.QLabel()
-        icon_lbl.setPixmap(
-            self.style()
-                .standardIcon(QtWidgets.QStyle.StandardPixmap.SP_ComputerIcon)
-                .pixmap(32, 32)
-        )
-        self.lbl_id = QtWidgets.QLabel(f"ID: {node_id}")
-        self.lbl_id.setStyleSheet(
-            f"color: {blended}; font-weight: bold; font-size: 16px; background-color: transparent;"
-        )
-        header = QtWidgets.QHBoxLayout()
-        header.addWidget(icon_lbl)
-        header.addWidget(self.lbl_id)
-        header.addStretch()
+        # Title/ID Area — use a sequential display index rather than raw ID
+        self.display_index = display_index
+        self.lbl_title = QtWidgets.QLabel(f"Node {self.display_index}")
+        self.lbl_title.setStyleSheet(f"color: {text_color}; font-weight: bold; font-size: 13px; background: transparent;")
+        self.lbl_sub_id = QtWidgets.QLabel(f"ID: {node_id}")
+        self.lbl_sub_id.setStyleSheet("color: gray; font-size: 10px; background: transparent;")
+        
+        left_vbox.addWidget(self.lbl_title)
+        left_vbox.addWidget(self.lbl_sub_id)
+        # (state label lives in the ribbon below)
 
+        # Values Block
         self.lbl_temp_f = QtWidgets.QLabel("-- °F")
-        self.lbl_temp_f.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_temp_f.setStyleSheet(
-            f"color: {blended}; font-size: 26px; font-weight: bold;"
-            f" padding-top: 6px; background-color: transparent;"
-        )
+        self.lbl_temp_f.setStyleSheet(f"color: {color}; font-size: 18px; font-weight: bold; background: transparent;")
         self.lbl_temp_c = QtWidgets.QLabel("-- °C")
-        self.lbl_temp_c.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_temp_c.setStyleSheet(
-            f"font-size: 14px; font-weight: normal; color: {toned};"
-            f" padding-bottom: 6px; background-color: transparent;"
-        )
+        self.lbl_temp_c.setStyleSheet("font-size: 12px; color: gray; background: transparent;")
+        
+        left_vbox.addWidget(self.lbl_temp_f)
+        left_vbox.addWidget(self.lbl_temp_c)
+        left_vbox.addStretch()
 
-        self.lbl_high = QtWidgets.QLabel("H")
-        self.lbl_high.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_high.setStyleSheet(self._BADGE_STYLE.format(color="gray"))
+        # Alarm Ribbon
+        status_ribbon = QtWidgets.QHBoxLayout()
+        status_ribbon.setSpacing(4)
 
         self.lbl_low = QtWidgets.QLabel("L")
         self.lbl_low.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_low.setStyleSheet(self._BADGE_STYLE.format(color="gray"))
+        self.lbl_low.setStyleSheet(self._BADGE_STYLE + "background-color: #757575;")
 
-        alarms = QtWidgets.QHBoxLayout()
-        alarms.addWidget(self.lbl_low)
-        alarms.addWidget(self.lbl_high)
-        alarms.addStretch()
+        self.lbl_high = QtWidgets.QLabel("H")
+        self.lbl_high.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.lbl_high.setStyleSheet(self._BADGE_STYLE + "background-color: #757575;")
 
-        layout.addLayout(header)
-        layout.addWidget(self.lbl_temp_f)
-        layout.addWidget(self.lbl_temp_c)
-        layout.addLayout(alarms)
+        status_ribbon.addWidget(self.lbl_low)
+        status_ribbon.addWidget(self.lbl_high)
 
-    def update_data(self, temp_f: float, temp_c: float, high_alarm: bool, low_alarm: bool):
-        """Update the temperature labels and alarm badge colors for this node."""
+        # Small state label (original): shown in the ribbon when a firmware
+        # diagnostic state is present.
+        self.lbl_state = QtWidgets.QLabel("")
+        self.lbl_state.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.lbl_state.setStyleSheet(
+            "font-size: 9px; font-weight: bold; color: #FFFFFF;"
+            " background-color: #D32F2F; border-radius: 4px; padding: 2px 4px;"
+        )
+        self.lbl_state.hide()
+        status_ribbon.addWidget(self.lbl_state)
+        status_ribbon.addStretch(1)
+        left_vbox.addLayout(status_ribbon)
+
+        # Right Column Content (The Gauge centered cleanly)
+        gauge_vbox = QtWidgets.QVBoxLayout()
+        gauge_vbox.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.gauge = RadialGauge(TEMP_MIN_F, TEMP_MAX_F, color, self)
+        gauge_vbox.addWidget(self.gauge)
+
+        main_layout.addLayout(left_vbox, stretch=1)
+        main_layout.addLayout(gauge_vbox, stretch=0)
+
+    def update_data(self, temp_f: float, temp_c: float, high_alarm: bool, low_alarm: bool, state: str | None = None):
+        """Update metrics UI states, forcing gauge colors red on disconnect or alarm states."""
         self.lbl_temp_f.setText(f"{temp_f:.1f} °F")
         self.lbl_temp_c.setText(f"{temp_c:.1f} °C")
-        self.lbl_high.setStyleSheet(self._BADGE_STYLE.format(color="red"  if high_alarm else "gray"))
-        self.lbl_low.setStyleSheet( self._BADGE_STYLE.format(color="blue" if low_alarm  else "gray"))
+        self.gauge.set_value(temp_f)
+
+        # Extract context validation strings cleanly
+        normalized_state = str(state).strip().upper() if state else ""
+        is_bad_state = normalized_state and normalized_state not in ("OK", "NORMAL", "CONNECTED", "NONE")
+
+        # Explicitly shift accent paths to alert red on failure conditions
+        if is_bad_state or high_alarm or low_alarm:
+            # Deep red for critical/fault states (e.g., DISCONNECTED, SHORT_CIRCUIT, STUCK)
+            self.gauge.set_accent_color("#8B0000")  # Dark red gauge arc
+            self.lbl_temp_f.setStyleSheet("color: #8B0000; font-size: 18px; font-weight: bold; background: transparent;")
+        else:
+            self.gauge.set_accent_color(self.base_color)
+            self.lbl_temp_f.setStyleSheet(f"color: {self.base_color}; font-size: 18px; font-weight: bold; background: transparent;")
+
+        self.lbl_high.setStyleSheet(self._BADGE_STYLE + f"background-color: {'#F44336' if high_alarm else '#757575'};")
+        self.lbl_low.setStyleSheet(self._BADGE_STYLE + f"background-color: {'#2196F3' if low_alarm else '#757575'};")
+        
+        if state and state.strip():
+            s = state.strip().upper()
+            self.lbl_state.setText(s)
+            self.lbl_state.show()
+        else:
+            self.lbl_state.hide()
 
 
 # ===========================================================================
@@ -180,14 +286,11 @@ class NodeWidget(QtWidgets.QFrame):
 class App(QtWidgets.QMainWindow):
     """
     Orchestrates: SerialWorker ↔ NodeStore ↔ NodeWidget + ChartWidget.
-
-    Owns no serial or data logic itself — delegates to the appropriate layer.
     """
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CAN Bus Node Monitor")
-        self.resize(1500, 900)
+        self.resize(1540, 920)
         self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint)
 
         self._store         = NodeStore()
@@ -200,7 +303,7 @@ class App(QtWidgets.QMainWindow):
         self._writer    = None
 
         self._ani   = None
-        self._lines: dict[str, object] = {}           # node_id → Line2D
+        self._lines: dict[str, object] = {}
         self._node_widgets: dict[str, NodeWidget] = {}
 
         self._build_ui()
@@ -212,7 +315,6 @@ class App(QtWidgets.QMainWindow):
     # -----------------------------------------------------------------------
     # UI construction
     # -----------------------------------------------------------------------
-
     def _build_ui(self):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -231,7 +333,7 @@ class App(QtWidgets.QMainWindow):
         self._btn_clear.setEnabled(False)
 
         left_panel = QtWidgets.QWidget()
-        left_panel.setMinimumWidth(450)
+        left_panel.setMinimumWidth(460)
         left_col = QtWidgets.QVBoxLayout(left_panel)
         left_col.setContentsMargins(0, 0, 0, 0)
         left_col.addWidget(left_splitter, stretch=1)
@@ -241,28 +343,43 @@ class App(QtWidgets.QMainWindow):
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Network Nodes Container - Fixed constraints to prevent layout stretching blowout
         nodes_group = QtWidgets.QGroupBox("Network Nodes")
-        nodes_group.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        self._nodes_info_layout = QtWidgets.QHBoxLayout(nodes_group)
-        self._nodes_info_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        nodes_group.setMinimumHeight(170)
+        nodes_group.setMaximumHeight(200)
+        nodes_group.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        right_layout.addWidget(nodes_group)
+        scroll_content = QtWidgets.QWidget()
+        self._nodes_info_layout = QtWidgets.QHBoxLayout(scroll_content)
+        self._nodes_info_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self._nodes_info_layout.setContentsMargins(6, 4, 6, 4)
+        self._nodes_info_layout.setSpacing(12)
+        
+        scroll_area.setWidget(scroll_content)
+        group_layout = QtWidgets.QVBoxLayout(nodes_group)
+        group_layout.setContentsMargins(4, 4, 4, 4)
+        group_layout.addWidget(scroll_area)
+
+        right_layout.addWidget(nodes_group, stretch=0)
         right_layout.addWidget(self._build_chart_widget(), stretch=1)
 
         main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         main_splitter.addWidget(left_panel)
         main_splitter.addWidget(right_panel)
-        main_splitter.setStretchFactor(0, 4)
-        main_splitter.setStretchFactor(1, 6)
+        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(1, 7)
 
         root.addWidget(main_splitter)
         self.statusBar().showMessage("Disconnected")
 
     def _build_config_group(self) -> QtWidgets.QGroupBox:
-        group    = QtWidgets.QGroupBox("Configuration")
+        group = QtWidgets.QGroupBox("Configuration")
         two_cols = QtWidgets.QHBoxLayout(group)
         two_cols.setContentsMargins(12, 12, 12, 12)
         two_cols.setSpacing(16)
@@ -322,11 +439,9 @@ class App(QtWidgets.QMainWindow):
         group  = QtWidgets.QGroupBox("Readings")
         layout = QtWidgets.QVBoxLayout(group)
         self._reading_tree = QtWidgets.QTreeWidget()
-        self._reading_tree.setHeaderLabels(["t(s)", "ID", "Temp (°F)", "Temp (°C)", "Alarms"])
+        self._reading_tree.setHeaderLabels(["t(s)", "ID", "Temp (°F)", "Temp (°C)", "Alarms", "State"])
         self._reading_tree.setAlternatingRowColors(True)
-        self._reading_tree.header().setSectionResizeMode(
-            QtWidgets.QHeaderView.ResizeMode.ResizeToContents
-        )
+        self._reading_tree.header().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self._reading_tree)
         return group
 
@@ -353,15 +468,12 @@ class App(QtWidgets.QMainWindow):
         self._ax.grid(True, which='minor', alpha=0.2, linestyle=':')
         self._ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=12))
         self._ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=15))
-        self._ax.xaxis.set_major_formatter(
-            ticker.FuncFormatter(lambda x, _: f"{x/1000:.1f}")
-        )
+        self._ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x/1000:.1f}"))
         self._legend = None
 
     # -----------------------------------------------------------------------
     # Port helpers
     # -----------------------------------------------------------------------
-
     def _refresh_ports(self):
         ports = [
             p.device for p in serial.tools.list_ports.comports()
@@ -373,7 +485,6 @@ class App(QtWidgets.QMainWindow):
     # -----------------------------------------------------------------------
     # Serial connection lifecycle
     # -----------------------------------------------------------------------
-
     def _toggle_connection(self):
         if self._worker:
             self._disconnect()
@@ -381,6 +492,7 @@ class App(QtWidgets.QMainWindow):
             self._connect()
 
     def _connect(self):
+        print("connecting...")
         port = self._port_cb.currentText()
         baud = int(self._baud_cb.currentText())
         if not port:
@@ -425,7 +537,7 @@ class App(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot()
     def _on_serial_connected(self):
         if self._t0 is None:
-            self._t0 = time.time()   # only on first connect; clear() resets it
+            self._t0 = time.time()
         self._btn_toggle.setEnabled(True)
         self._btn_clear.setEnabled(True)
         port, baud = self._port_cb.currentText(), self._baud_cb.currentText()
@@ -441,14 +553,12 @@ class App(QtWidgets.QMainWindow):
         if self._worker:
             cmd = self._cmd_input.text().strip()
             if cmd:
-                # Emit signal → queued to worker thread (thread-safe write)
                 self._worker.write_cmd.emit(f"{cmd}\n".encode("utf-8"))
                 self._cmd_input.clear()
 
     # -----------------------------------------------------------------------
-    # Data ingestion — runs on main thread (queued signal from worker)
+    # Data ingestion — runs on main thread
     # -----------------------------------------------------------------------
-
     @QtCore.pyqtSlot(dict)
     def _on_data(self, parsed: dict):
         """Handle parsed data from the serial worker.
@@ -474,12 +584,14 @@ class App(QtWidgets.QMainWindow):
         _, is_new = self._store.get_or_create(c_id)
         if is_new:
             color = self._store.color_for(c_id)
-            nw = NodeWidget(c_id, color)
+            display_index = len(self._node_widgets) + 1
+            nw = NodeWidget(c_id, color, display_index)
             self._node_widgets[c_id] = nw
             self._nodes_info_layout.addWidget(nw)
 
         self._store.append(c_id, ts, tf, tc)
-        self._node_widgets[c_id].update_data(tf, tc, h_alarm, l_alarm)
+        # Forward custom firmware state (if any) to the widget for display.
+        self._node_widgets[c_id].update_data(tf, tc, h_alarm, l_alarm, parsed.get('state'))
 
         alarms_str = " | ".join(filter(None, [
             "HIGH" if h_alarm else "",
@@ -489,12 +601,11 @@ class App(QtWidgets.QMainWindow):
         if self._streaming and self._writer:
             self._writer.writerow([ts, c_id, parsed['dir'], tf, tc, h_alarm, l_alarm])
 
-        self._push_reading_row(ts, c_id, tf, tc, alarms_str, h_alarm, l_alarm)
+        self._push_reading_row(ts, c_id, tf, tc, alarms_str, h_alarm, l_alarm, parsed.get('state'))
 
     # -----------------------------------------------------------------------
     # Plot animation — reads from store, no serial I/O here
     # -----------------------------------------------------------------------
-
     def _start_animation(self):
         self._ani = animation.FuncAnimation(
             self._fig, self._update_plot,
@@ -511,7 +622,12 @@ class App(QtWidgets.QMainWindow):
                 continue
             if node_id not in self._lines:
                 color = self._store.color_for(node_id)
-                line, = self._ax.plot([], [], color=color, label=f"Node {node_id}")
+                # Prefer the sequential display index if available
+                if node_id in self._node_widgets:
+                    label = f"Node {self._node_widgets[node_id].display_index}"
+                else:
+                    label = f"Node {node_id}"
+                line, = self._ax.plot([], [], color=color, label=label)
                 self._lines[node_id] = line
                 added = True
 
@@ -531,12 +647,12 @@ class App(QtWidgets.QMainWindow):
             )
         return list(self._lines.values())
 
-    def _push_reading_row(self, ts, c_id, tf, tc, alarms, h_alarm, l_alarm):
+    def _push_reading_row(self, ts, c_id, tf, tc, alarms, h_alarm, l_alarm, state: str | None = None):
         if self._reading_tree.topLevelItemCount() >= MAX_SAMPLES:
             self._reading_tree.takeTopLevelItem(0)
         item = QtWidgets.QTreeWidgetItem(
             self._reading_tree,
-            list(dp.format_row(ts / 1000.0, c_id, tf, tc, alarms)),
+            list(dp.format_row(ts / 1000.0, c_id, tf, tc, alarms, state)),
         )
         if h_alarm:
             item.setBackground(4, QtGui.QColor(255, 200, 200))
