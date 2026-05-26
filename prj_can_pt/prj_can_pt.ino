@@ -1,5 +1,22 @@
-// CAN Bus Heartbeat Float - ESP32-C3 Super Mini + MCP2515
-// Library: autowp/arduino-mcp2515
+/**
+ * @file prj_can_pt.ino
+ * @brief CAN Bus Temperature Sensor Node using ESP32-C3 and MCP2515.
+ *
+ * This firmware reads analog signals from a PT100 temperature sensor via the
+ * ESP32-C3's internal ADC, applying oversampling, moving average filtering, and
+ * hardware curve-fitting calibration. It translates the conditioned voltage to
+ * a temperature (Fahrenheit) using a Look-Up Table (LUT) with linear
+ * interpolation.
+ *
+ * The temperature data and comprehensive hardware frontend diagnostic states
+ * (Normal, Disconnected, Short Circuit, Stuck, or Noisy) and thermal Alarms
+ * are transmitted periodically over a CAN bus using the MCP2515 controller.
+ *  It also features a UART CLI for real-time debugging, custom simulation
+ * modes, and bus diagnostics.
+ *
+ * Hardware: ESP32-C3 Super Mini + MCP2515 Module
+ * Dependencies: autowp/arduino-mcp2515
+ */
 
 #include <SPI.h>
 #include <esp_adc/adc_cali.h>
@@ -17,8 +34,7 @@
 #error "You must define either NA or NB before flashing."
 #endif
 
-// -- Node identity
-// ---------------------------------------------------------------
+// -- Node identity -----------------------------------------------------------
 #if defined(NA)
 const uint32_t TX_ID = 0x40;
 const char* ND_NAME = "A";
@@ -27,8 +43,7 @@ const uint32_t TX_ID = 0xA1;
 const char* ND_NAME = "B";
 #endif
 
-// -- Hardware config (ESP32-C3 SPI pins)
-// ----------------------------------------
+// -- Hardware config (ESP32-C3 SPI pins) -------------------------------------
 #define PIN_SCK 4
 #define PIN_MISO 5
 #define PIN_MOSI 6
@@ -36,7 +51,7 @@ const char* ND_NAME = "B";
 #define PIN_INT 3  // hardware interrupt pin
 #define PIN_LED 8  // active LOW
 
-// -- ADC Config -----------------------------------------
+// -- ADC Config --------------------------------------------------------------
 #define ADC_CHANNEL ADC_CHANNEL_0  // GPIO0
 #define ADC_OVERSAMPLE 32
 #define FILTER_SIZE 16
@@ -46,13 +61,15 @@ const char* ND_NAME = "B";
 #define ADC_OFFSET -5.95856
 #define V_AMP_GAIN 11.25111
 
-// -- Sensor State Thresholds
+// -- Sensor State Thresholds -------------------------------------------------
 #define MIN_FLT_V 0.09
 #define MAX_FLT_V 3.19
-constexpr float STUCK_DELTA_THRESHOLD = 0.01f; 
+constexpr float STUCK_DELTA_THRESHOLD = 0.01f;
 
-// -- Sensor State Codification
-// ------------------------------------------------------------------
+/**
+ * @brief Represents the physical health state of the sensor loop.
+ * Bypasses thermal alarms if a hardware fault is detected.
+ */
 enum SensorState : short {
   STATE_NORMAL = 0,
   STATE_DISCONNECTED = 1,   // Voltage drops near 0V
@@ -61,15 +78,13 @@ enum SensorState : short {
   STATE_NOISY = 4           // High variance (EMC interference/unstable)
 };
 
-// -- Timing
-// ----------------------------------------------------------------------
+// -- Timing ------------------------------------------------------------------
 const uint32_t TX_T = 500;
 const uint32_t HT_T = 2000;
 const uint32_t SENS_T = 20;
 const uint32_t SENS_EV_T = 200;
 
-// -- Thresholds & Status
-// ---------------------------------------------------------
+// -- Thresholds & Status -----------------------------------------------------
 const uint8_t LED_ON = LOW;
 const uint8_t LED_OFF = HIGH;
 const float THF = 60.0f;
@@ -80,7 +95,7 @@ const float SIM_MAX = THF + 50.0f;
 const float SIM_MIN = TLF - 50.0f;
 
 // -- LUT for PT100 (Voltage to Fahrenheit)
-// --------------------------------------- 
+// ---------------------------------------
 // const double lut_voltage[] =
 // {1.12, 1.22, 1.38, 1.53, 1.69, 1.87, 2.01, 2.18, 2.35, 2.52, 2.70}; const
 // double lut_temp[] = {80.8, 85.1, 95.2, 105.1, 115.2, 125.2, 135.5, 145.6,
@@ -97,43 +112,39 @@ const float SIM_MIN = TLF - 50.0f;
 // const int lut_size = 11;
 const float lut_voltage[] = {0.756f, 0.856f, 1.016f, 1.166f, 1.326f, 1.506f,
                              1.646f, 1.816f, 1.986f, 2.156f, 2.336f};
-const float lut_temp[] = {84.78f, 89.08f, 99.18f, 109.08f, 119.18f, 129.18f,
+const float lut_temp[] = {84.78f,  89.08f,  99.18f,  109.08f, 119.18f, 129.18f,
                           139.48f, 149.58f, 159.48f, 169.38f, 179.58f};
 const int lut_size = 11;
-// -- Pre-calculated Single-Precision Slopes
+
+// Pre-calculated slopes to avoid FPU division during runtime interpolation
 static float lut_slopes[lut_size - 1];
 
-// -- Global Handles & State
-// ------------------------------------------------------
+// -- Global Handles & State --------------------------------------------------
 MCP2515 mcp2515(PIN_CS);
 static adc_oneshot_unit_handle_t adcHandle;
 static adc_cali_handle_t adcCaliHandle;
-// when true, sweep-based modes refresh on each TX cycle
-static bool swp = false;
-// for payload generation: 0 = 0f, 1 = expo, 2 = tempsimu,
-// 3 = realtemp, 4 manual
-static short md = 3;
+
+static bool swp = false;  // Sweep-based modes refresh on each TX cycle
+static short md = 3;      // 0=0f, 1=expo, 2=tempsimu, 3=realtemp, 4=manual
 
 static uint32_t lastTx = 0;
 static uint32_t lastHth = 0;
 static uint32_t lastSen = 0;
 static uint32_t lastSenEval = 0;
- // if true, also activate the onboard LED for local alarm
-static bool ownAlm = false; 
 
+static bool ownAlm = false;  // Activate onboard LED for local alarm
 static bool txEn = true;
 static bool rxEn = true;
 static bool bErr = false;
 static bool dbgEn = true;
 static bool calEn = true;
-
 static volatile bool canRxFlg = false;
 
 static float data_f = 79.5f;
 static float temp_f = 0.0f;
 static short senState = STATE_NORMAL;
 static float f[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-static bool exd = true;  // var for dir calExpo
+static bool exd = true;  // Direction flag for calExpo
 
 // ADC Filter state
 static float filterBuf[FILTER_SIZE] = {0};
@@ -142,8 +153,7 @@ static float filterSum = 0.0f;
 
 static can_frame txFrm;
 
-// -- Function Prototypes
-// ---------------------------------------------------------
+// -- Function Prototypes -----------------------------------------------------
 static void setupCan();
 static void initADC();
 static void initLutSlopes();
@@ -165,6 +175,11 @@ static void hdlFrm(const struct can_frame& frame);
 static void chkCan();
 static void hdlSer();
 
+/**
+ * @brief Hardware ISR for MCP2515 INT pin.
+ * Flags the main super-loop to process the SPI read, keeping the ISR extremely
+ * short.
+ */
 void IRAM_ATTR onCanInterrupt() { canRxFlg = true; }
 
 void setup() {
@@ -202,6 +217,12 @@ void loop() {
   chkCan();
 }
 
+/**
+ * @brief Initializes the MCP2515 CAN Controller.
+ * Configures 500Kbps bitrate, sets hardware masks to strictly accept IDs 0x000
+ * - 0x0FF, and enables One-Shot mode to prevent TX buffer locking on
+ * unacknowledged frames.
+ */
 static void setupCan() {
   if (dbgEn) Serial.println("[CAN] Initializing...");
   while (mcp2515.reset() != MCP2515::ERROR_OK) {
@@ -225,6 +246,11 @@ static void setupCan() {
   if (dbgEn) Serial.println("[CAN] Ready.");
 }
 
+/**
+ * @brief Initializes the ESP32 One-Shot ADC subsystem.
+ * Employs hardware curve-fitting schemes to correct ESP32 internal
+ * non-linearities.
+ */
 static void initADC() {
   adc_oneshot_unit_init_cfg_t unitCfg = {
       .unit_id = ADC_UNIT_1,
@@ -247,6 +273,11 @@ static void initADC() {
   adc_cali_create_scheme_curve_fitting(&caliCfg, &adcCaliHandle);
 }
 
+/**
+ * @brief Pre-calculates mapping slopes at startup.
+ * Optimizes the LUT interpolation by avoiding FPU divisions inside the primary
+ * loop.
+ */
 void initLutSlopes() {
   for (int i = 0; i < lut_size - 1; i++) {
     lut_slopes[i] =
@@ -254,6 +285,11 @@ void initLutSlopes() {
   }
 }
 
+/**
+ * @brief 20ms periodic task evaluating the sensor frontend.
+ * Extracts raw voltage, applies moving average filtering, executes state
+ * diagnostics, and maps valid voltages to temperature data.
+ */
 static void hdlSensor() {
   const uint32_t now = millis();
   if (now - lastSen < SENS_T) return;
@@ -265,7 +301,8 @@ static void hdlSensor() {
 
   chkSenState(vOut);
 
-  if (senState == STATE_NORMAL || senState == STATE_NOISY || senState == STATE_STUCK) {
+  if (senState == STATE_NORMAL || senState == STATE_NOISY ||
+      senState == STATE_STUCK) {
     temp_f = far2cel(vToTempLUT(vOut));
 
     if (calEn && dbgEn) {
@@ -278,13 +315,20 @@ static void hdlSensor() {
     temp_f = -999.0f;  // Structural fallback value for bad data
   }
 
-  if (ownAlm)
+  if (ownAlm) {
     digitalWrite(PIN_LED,
                  (temp_f > THF || temp_f < TLF || senState != STATE_NORMAL)
                      ? LED_ON
                      : LED_OFF);
+  }
 }
 
+/**
+ * @brief Reads the ADC in a rapid burst and calculates the average.
+ * Lowers the quantization noise floor, applies device-specific calibration,
+ * and user-defined linear correction coefficients.
+ * @return float Conditioned millivolt reading.
+ */
 static float readOversampled() {
   int32_t acc = 0;
   int raw;
@@ -292,10 +336,10 @@ static float readOversampled() {
     adc_oneshot_read(adcHandle, ADC_CHANNEL, &raw);
     acc += raw;
   }
+
   int raw_avg = acc / ADC_OVERSAMPLE;
   int mV;
   adc_cali_raw_to_voltage(adcCaliHandle, raw_avg, &mV);
-
   float corrected = (mV * ADC_SLOPE) + ADC_OFFSET;
 
   if (calEn && dbgEn) {
@@ -306,6 +350,11 @@ static float readOversampled() {
   return (corrected < 0.0f) ? 0.0f : corrected;
 }
 
+/**
+ * @brief O(1) Moving Average Filter logic.
+ * Maintains a running sum via a ring buffer to avoid O(N) recalculations on
+ * every tick.
+ */
 static float upMovAv(float c_mV) {
   filterSum -= filterBuf[filterIdx];
   filterBuf[filterIdx] = c_mV;
@@ -314,6 +363,11 @@ static float upMovAv(float c_mV) {
   return filterSum / FILTER_SIZE;
 }
 
+/**
+ * @brief Translates conditioned analog voltage to Fahrenheit using the mapped
+ * PT100 LUT. Utilizes a binary search for O(log N) localization and
+ * hardware-accelerated FPU interpolation utilizing pre-calculated slopes.
+ */
 static float vToTempLUT(float voltage_v) {
   //  Boundary Guard Assertions (Hardware-accelerated comparisons)
   if (voltage_v <= lut_voltage[0]) {
@@ -333,7 +387,6 @@ static float vToTempLUT(float voltage_v) {
 
   while (low <= high) {
     int mid = low + ((high - low) >> 1);  // Bitwise right-shift division
-
     if (voltage_v < lut_voltage[mid]) {
       high = mid - 1;
     } else if (voltage_v > lut_voltage[mid + 1]) {
@@ -343,8 +396,6 @@ static float vToTempLUT(float voltage_v) {
       break;
     }
   }
-
-  // Fully Hardware-Accelerated FPU Calculation (Zero Emulation Overhead)
   return lut_temp[i] + lut_slopes[i] * (voltage_v - lut_voltage[i]);
 }
 
@@ -352,13 +403,17 @@ static float far2cel(float f) { return (f - 32.0f) * (5.0f / 9.0f); }
 
 static void chkSenState(float vOut) {
   const uint32_t now = millis();
-  // Executes heavy looping and variance statistics independently every 200ms
+  // Execute heavy statistical looping independently every 200ms
   if (now - lastSenEval >= SENS_EV_T) {
     lastSenEval = now;
     senState = calcSenState(vOut);
   }
 }
 
+/**
+ * @brief Diagnoses hardware line integrity (open, short, frozen, noisy).
+ * Performs a single-pass O(N) statistical extraction over the filter buffer.
+ */
 static short calcSenState(float vOut) {
   // Structural Voltage Bounds Check
   if (vOut < MIN_FLT_V) return STATE_DISCONNECTED;
@@ -372,18 +427,17 @@ static short calcSenState(float vOut) {
 
   for (uint8_t i = 0; i < FILTER_SIZE; i++) {
     float val = filterBuf[i];
-
     if (val < minVal) minVal = val;
     if (val > maxVal) maxVal = val;
-
     float diff = val - mean;
     sumSqDiff += diff * diff;
   }
 
   // 1. Stuck Detection: Peak-to-Peak Delta Window
   // Compares absolute signal span against a tight millivolt noise floor.
-  // Set to 0.0f for an absolute digital freeze, or a tiny fraction (e.g., 0.02mV) 
-  // if tracking operational DAC/ADC signal freeze with minimal thermal noise.
+  // Set to 0.0f for an absolute digital freeze, or a tiny fraction (e.g.,
+  // 0.02mV) if tracking operational DAC/ADC signal freeze with minimal thermal
+  // noise.
   if ((maxVal - minVal) < STUCK_DELTA_THRESHOLD) {
     return STATE_STUCK;
   }
@@ -395,6 +449,11 @@ static short calcSenState(float vOut) {
   return STATE_NORMAL;
 }
 
+/**
+ * @brief 500ms periodic transmission task.
+ * Requests MCP2515 to dispatch frames and monitors status flags for bus
+ * recoveries.
+ */
 static void hdlTx() {
   if (!txEn) return;
 
@@ -432,6 +491,11 @@ static void hdlTx() {
   }
 }
 
+/**
+ * @brief Assembles the CAN payload based on the operational mode.
+ * Encapsulates the float into 4 bytes, performing Big-Endian network byte order
+ * swaps, and appends the diagnostic byte masks.
+ */
 static can_frame buildTxFrm() {
   can_frame frame;
   memset(&frame, 0, sizeof(frame));
@@ -479,6 +543,11 @@ static can_frame buildTxFrm() {
   return frame;
 }
 
+/**
+ * @brief Encodes hardware state and thermal alarms into CAN Bytes 4 and 5.
+ * Prioritizes custom hex patterns over standard window alarms during critical
+ * hardware failures.
+ */
 static void buildStatus(float data, short state, uint8_t* status) {
   status[0] = 0x00;  // Byte 4 Initialization
   status[1] = 0x00;  // Byte 5 Initialization
@@ -517,13 +586,16 @@ static void swapBytes(uint8_t* output, const uint8_t* source) {
 }
 
 // Returns the current simulated temperature (degrees F).
-// in 0.5 F steps, crossing both alarm thresholds on each pass.
 static float simT(float val) {
   float temp = val + 1.03715f;
   if (temp > SIM_MAX) temp = SIM_MIN;
   return temp;
 }
 
+/**
+ * @brief 4-tap IIR filter structure for generating divergent/convergent test
+ * curves.
+ */
 static float calcExpo(void) {
   if (f[0] <= 1.0f) {
     exd = true;
@@ -548,6 +620,11 @@ static float calcExpo(void) {
   return m;
 }
 
+/**
+ * @brief Fetches and routes incoming CAN frames.
+ * Evaluates both the ISR flag and the physical pin state in case of missed
+ * falling edges.
+ */
 static void hdlRx() {
   // Check both the ISR flag AND the physical pin state.
   // If the pin is stuck LOW, a FALLING edge was missed but we must still drain
@@ -585,17 +662,18 @@ static void hdlRx() {
   }
 }
 
+/**
+ * @brief Parses the CAN frame. Reverses endianness and updates local state.
+ */
 static void hdlFrm(const struct can_frame& frame) {
   // Software guard: hardware filter covers this, but defends against
-  // misconfiguration. Require at least 4 bytes for float extraction. if
-  // (frame.can_id != RX_ID || frame.can_dlc < 4) return;
+  // misconfiguration. Require at least 4 bytes for float extraction.
 
   uint8_t dt[sizeof(frame.data)];
   uint64_t raw = 0;
   float conv;
 
   memcpy(dt, frame.data, sizeof(dt));
-
   swapBytes(dt, frame.data);
 
   memcpy(&conv, dt, sizeof(conv));
@@ -622,6 +700,9 @@ static void hdlFrm(const struct can_frame& frame) {
   }
 }
 
+/**
+ * @brief 2000ms periodic heartbeat parsing MCP2515 Network/Data layer errors.
+ */
 static void chkCan() {
   const uint32_t now = millis();
   if (now - lastHth < HT_T) return;
@@ -681,6 +762,7 @@ static void chkCan() {
   }
 }
 
+// -- UART Serial Parsing (CLI) -----------------------------------------------
 static bool hdlBCmd(const String& cmd) {
   if (cmd == "tx") {
     txEn = true;
