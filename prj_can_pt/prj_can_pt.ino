@@ -47,8 +47,8 @@ const char* ND_NAME = "B";
 #define V_AMP_GAIN 11.25111
 
 // -- Sensor State Thresholds
-#define MIN_FLT_V 0.15
-#define MAX_FLT_V 3.00
+#define MIN_FLT_V 0.09
+#define MAX_FLT_V 3.19
 
 // -- Sensor State Codification
 // ------------------------------------------------------------------
@@ -71,20 +71,34 @@ const uint32_t SENS_EV_T = 200;
 // ---------------------------------------------------------
 const uint8_t LED_ON = LOW;
 const uint8_t LED_OFF = HIGH;
-const float THF = 115.5f;
-const float TLF = 90.0f;
+const float THF = 60.0f;
+const float TLF = 20.0f;
 const uint8_t AV = 0xFF;
+// Simulation bounds (separate from alarm thresholds TLF/THF)
+const float SIM_MAX = THF + 50.0f;
+const float SIM_MIN = TLF - 50.0f;
 
 // -- LUT for PT100 (Voltage to Fahrenheit)
-// --------------------------------------- const double lut_voltage[] =
+// --------------------------------------- 
+// const double lut_voltage[] =
 // {1.12, 1.22, 1.38, 1.53, 1.69, 1.87, 2.01, 2.18, 2.35, 2.52, 2.70}; const
 // double lut_temp[] = {80.8, 85.1, 95.2, 105.1, 115.2, 125.2, 135.5, 145.6,
 // 155.5, 165.4, 175.6};
-const float lut_voltage[] = {0.89f, 0.99f, 1.09f, 1.25f, 1.38f, 1.56f,
-                             1.74f, 1.88f, 2.05f, 2.22f, 2.39f, 2.57f};
-const float lut_temp[] = {77.4f,  83.86f, 88.5f,  98.4f,  108.3f, 118.4f,
-                          127.4f, 137.6f, 147.9f, 157.9f, 167.9f, 177.9f};
-const int lut_size = 12;
+// const float lut_voltage[] = {0.89f, 0.99f, 1.09f, 1.25f, 1.38f, 1.56f,
+//                              1.74f, 1.88f, 2.05f, 2.22f, 2.39f, 2.57f};
+// const float lut_temp[] = {77.4f,  83.86f, 88.5f,  98.4f,  108.3f, 118.4f,
+//                           127.4f, 137.6f, 147.9f, 157.9f, 167.9f, 177.9f};
+// const int lut_size = 12;
+// const float lut_voltage[] = {0.81f, 0.91f, 1.07f, 1.22f, 1.38f, 1.56f,
+//                              1.7f, 1.87f, 2.04f, 2.21f, 2.39f};
+// const float lut_temp[] = {88.7f, 93.0f, 103.1f, 113.0f, 123.1f, 133.1f,
+//                           143.4f, 153.5f, 163.4f, 173.3f, 183.5f};
+// const int lut_size = 11;
+const float lut_voltage[] = {0.756f, 0.856f, 1.016f, 1.166f, 1.326f, 1.506f,
+                             1.646f, 1.816f, 1.986f, 2.156f, 2.336f};
+const float lut_temp[] = {84.78f, 89.08f, 99.18f, 109.08f, 119.18f, 129.18f,
+                          139.48f, 149.58f, 159.48f, 169.38f, 179.58f};
+const int lut_size = 11;
 // -- Pre-calculated Single-Precision Slopes
 static float lut_slopes[lut_size - 1];
 
@@ -103,12 +117,14 @@ static uint32_t lastTx = 0;
 static uint32_t lastHth = 0;
 static uint32_t lastSen = 0;
 static uint32_t lastSenEval = 0;
-static bool ownAlm = false;  // if true, also activate the onboard LED for local alarm
+ // if true, also activate the onboard LED for local alarm
+static bool ownAlm = false; 
 
 static bool txEn = true;
 static bool rxEn = true;
 static bool bErr = false;
 static bool dbgEn = true;
+static bool calEn = true;
 
 static volatile bool canRxFlg = false;
 
@@ -134,6 +150,7 @@ static void hdlSensor();
 static float readOversampled();
 static float upMovAv(float c_mV);
 static float vToTempLUT(float voltage_v);
+static float far2cel(float f);
 static void chkSenState(float vOut);
 static short calcSenState(float vOut);
 static void hdlTx();
@@ -247,16 +264,24 @@ static void hdlSensor() {
 
   chkSenState(vOut);
 
-  if (senState == STATE_NORMAL || senState == STATE_NOISY) {
-    temp_f = vToTempLUT(vOut);
+  if (senState == STATE_NORMAL || senState == STATE_NOISY || senState == STATE_STUCK) {
+    temp_f = far2cel(vToTempLUT(vOut));
+
+    if (calEn && dbgEn) {
+      Serial.printf(
+          "[SENS] raw_mV: %.2f, filt_mV: %.2f, vOut: %.3f V, Temp: %.2f C°, "
+          "State: %d\n",
+          raw_mV, f_mV, vOut, temp_f, senState);
+    }
   } else {
     temp_f = -999.0f;  // Structural fallback value for bad data
   }
 
-  if(ownAlm) digitalWrite(PIN_LED,
-               (temp_f > THF || temp_f < TLF || senState != STATE_NORMAL)
-                   ? LED_ON
-                   : LED_OFF);
+  if (ownAlm)
+    digitalWrite(PIN_LED,
+                 (temp_f > THF || temp_f < TLF || senState != STATE_NORMAL)
+                     ? LED_ON
+                     : LED_OFF);
 }
 
 static float readOversampled() {
@@ -271,6 +296,12 @@ static float readOversampled() {
   adc_cali_raw_to_voltage(adcCaliHandle, raw_avg, &mV);
 
   float corrected = (mV * ADC_SLOPE) + ADC_OFFSET;
+
+  if (calEn && dbgEn) {
+    Serial.printf("[ADC] Raw: %d, Avg: %d, mV: %d, Corrected: %.2f\n", raw,
+                  raw_avg, mV, corrected);
+  }
+
   return (corrected < 0.0f) ? 0.0f : corrected;
 }
 
@@ -316,6 +347,8 @@ static float vToTempLUT(float voltage_v) {
   return lut_temp[i] + lut_slopes[i] * (voltage_v - lut_voltage[i]);
 }
 
+static float far2cel(float f) { return (f - 32.0f) * (5.0f / 9.0f); }
+
 static void chkSenState(float vOut) {
   const uint32_t now = millis();
   // Executes heavy looping and variance statistics independently every 200ms
@@ -331,20 +364,26 @@ static short calcSenState(float vOut) {
   if (vOut > MAX_FLT_V) return STATE_SHORT_CIRCUIT;
 
   // Statistical Analysis of the Moving Target Array
-  bool identical = true;
-  float baseline = filterBuf[0];
+  int mx_eq_cnt = 0;
   float mean = filterSum / FILTER_SIZE;
   float sumSqDiff = 0.0f;
 
   for (uint8_t i = 0; i < FILTER_SIZE; i++) {
-    if (abs(filterBuf[i] - baseline) > 0.0001) {
-      identical = false;
+    int count = 0;
+    for (uint8_t j = 0; j < FILTER_SIZE; j++) {
+      if (abs(filterBuf[i] - filterBuf[j]) < 0.000001f) {
+        count++;
+      }
     }
+    if (count > mx_eq_cnt) {
+      mx_eq_cnt = count;
+    }
+
     float diff = filterBuf[i] - mean;
     sumSqDiff += diff * diff;
   }
 
-  if (identical) return STATE_STUCK;
+  if (mx_eq_cnt > (FILTER_SIZE * 0.9f)) return STATE_STUCK;
 
   // Variance calculation for high-frequency runtime anomaly checks
   float variance = sumSqDiff / FILTER_SIZE;
@@ -477,8 +516,8 @@ static void swapBytes(uint8_t* output, const uint8_t* source) {
 // Returns the current simulated temperature (degrees F).
 // in 0.5 F steps, crossing both alarm thresholds on each pass.
 static float simT(float val) {
-  float temp = val += 0.32715f;
-  if (temp > THF + 10.0f) temp = TLF - 10.0f;
+  float temp = val + 1.03715f;
+  if (temp > SIM_MAX) temp = SIM_MIN;
   return temp;
 }
 
@@ -593,10 +632,12 @@ static void chkCan() {
       Serial.printf("[BUS] RX Overflow (0x%02X): %s%s\n", ND_NAME, eflg,
                     (eflg & MCP2515::EFLG_RX0OVR) ? "[RXB0] " : "",
                     (eflg & MCP2515::EFLG_RX1OVR) ? "[RXB1]" : "");
-    // Output error in non-debug format for UI processing
-    Serial.printf("!ERR,OVF,0x%02X,RX%s%s\n", eflg,
-                  (eflg & MCP2515::EFLG_RX0OVR) ? "B0" : "",
-                  (eflg & MCP2515::EFLG_RX1OVR) ? "B1" : "");
+    else {
+      // Output error in non-debug format for UI processing
+      Serial.printf("!ERR,OVF,0x%02X,RX%s%s\n", eflg,
+                    (eflg & MCP2515::EFLG_RX0OVR) ? "B0" : "",
+                    (eflg & MCP2515::EFLG_RX1OVR) ? "B1" : "");
+    }
     mcp2515.clearRXnOVRFlags();
   }
 
@@ -607,27 +648,33 @@ static void chkCan() {
         Serial.printf(
             "[BUS] CRITICAL: Bus-Off. TEC >= 256. Node disconnected.\n",
             ND_NAME);
-      // Output error in non-debug format for UI processing
-      Serial.printf("!ERR,BOFF,0x%02X,Bus-Off\n", eflg);
+      else {
+        // Output error in non-debug format for UI processing
+        Serial.printf("!ERR,BOFF,0x%02X,Bus-Off\n", eflg);
+      }
     }
   } else if (eflg & (MCP2515::EFLG_TXEP | MCP2515::EFLG_RXEP)) {
     if (dbgEn)
       Serial.printf("[BUS] WARNING: Error-Passive. %s%s\n", ND_NAME,
                     (eflg & MCP2515::EFLG_TXEP) ? "[TX TEC >= 128] " : "",
                     (eflg & MCP2515::EFLG_RXEP) ? "[RX REC >= 128]" : "");
-    // Output error in non-debug format for UI processing
-    Serial.printf("!ERR,EPR,0x%02X,%s%s\n", eflg,
-                  (eflg & MCP2515::EFLG_TXEP) ? "TX" : "",
-                  (eflg & MCP2515::EFLG_RXEP) ? "RX" : "");
+    else {
+      // Output error in non-debug format for UI processing
+      Serial.printf("!ERR,EPR,0x%02X,%s%s\n", eflg,
+                    (eflg & MCP2515::EFLG_TXEP) ? "TX" : "",
+                    (eflg & MCP2515::EFLG_RXEP) ? "RX" : "");
+    }
   } else if (eflg & MCP2515::EFLG_EWARN) {
-    if (dbgEn)
+    if (dbgEn) {
       Serial.printf("[BUS] NOTICE: Error Warning. %s%s\n", ND_NAME,
                     (eflg & MCP2515::EFLG_TXWAR) ? "[TX TEC >= 96] " : "",
                     (eflg & MCP2515::EFLG_RXWAR) ? "[RX REC >= 96]" : "");
-    // Output error in non-debug format for UI processing
-    Serial.printf("!ERR,EWR,0x%02X,%s%s\n", eflg,
-                  (eflg & MCP2515::EFLG_TXWAR) ? "TX" : "",
-                  (eflg & MCP2515::EFLG_RXWAR) ? "RX" : "");
+    } else {
+      // Output error in non-debug format for UI processing
+      Serial.printf("!ERR,EWR,0x%02X,%s%s\n", eflg,
+                    (eflg & MCP2515::EFLG_TXWAR) ? "TX" : "",
+                    (eflg & MCP2515::EFLG_RXWAR) ? "RX" : "");
+    }
   }
 }
 
@@ -672,13 +719,20 @@ static bool hdlBCmd(const String& cmd) {
     if (dbgEn) Serial.printf("[CMD] mode change to %d\n", md);
   } else if (cmd == "alm") {
     ownAlm = !ownAlm;
-    if (!ownAlm) digitalWrite(PIN_LED, LED_OFF);  // turn off LED if disabling alarm
-    if (dbgEn) Serial.printf("[CMD] Onboard alarm %s\n", ownAlm ? "enabled" : "disabled");
+    if (!ownAlm)
+      digitalWrite(PIN_LED, LED_OFF);  // turn off LED if disabling alarm
+    if (dbgEn)
+      Serial.printf("[CMD] Onboard alarm %s\n",
+                    ownAlm ? "enabled" : "disabled");
   } else if (cmd == "dbg") {
     dbgEn = true;
     Serial.println("[CMD] Debug enabled");
   } else if (cmd == "ndbg") {
     dbgEn = false;
+  } else if (cmd == "cal") {
+    calEn = true;
+  } else if (cmd == "ncal") {
+    calEn = false;
   } else
     return false;
   return true;
