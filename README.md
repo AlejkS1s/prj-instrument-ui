@@ -45,11 +45,11 @@ The system separates hardware polling (I/O) from data presentation (GUI) using c
 
 ```mermaid
 graph TD
-    subgraph Hardware Layer
+    subgraph HardwareLayer [Hardware Layer]
         ESP[ESP32-C3 Firmware] -- UART over USB --> OS[OS Serial Port]
     end
 
-    subgraph QThread: Serial Worker
+    subgraph QThreadLayer [QThread: Serial Worker]
         SW[SerialWorker]
         RP[recoder_processing]
         OS -- read() --> SW
@@ -57,7 +57,7 @@ graph TD
         RP -- dict --> SW
     end
 
-    subgraph Main Thread: GUI & Controller
+    subgraph MainThreadLayer [Main Thread: GUI & Controller]
         APP[App Controller]
         NS[(NodeStore Model)]
         NW[NodeWidgets]
@@ -71,9 +71,9 @@ graph TD
         NS -. FuncAnimation .-> PL
     end
     
-    style Hardware Layer fill:#333333,stroke:#666,color:#fff
-    style QThread: Serial Worker fill:#1E4A35,stroke:#4CAF50,color:#fff
-    style Main Thread: GUI & Controller fill:#1B3A5A,stroke:#2196F3,color:#fff
+    style HardwareLayer fill:#333333,stroke:#666,color:#fff
+    style QThreadLayer fill:#1E4A35,stroke:#4CAF50,color:#fff
+    style MainThreadLayer fill:#1B3A5A,stroke:#2196F3,color:#fff
 ```
 
 ### 2. Component Details & Data Flow
