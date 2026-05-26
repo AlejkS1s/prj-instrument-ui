@@ -451,7 +451,18 @@ class App(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot(dict)
     def _on_data(self, parsed: dict):
+        """Handle parsed data from the serial worker.
+        Supports normal telemetry dictionaries as well as error dictionaries
+        emitted by ``chkCan`` when ``dbgEn`` is false. Errors are printed to the
+        console (stdout) to mimic the behaviour of ``record_processing``.
+        """
         if self._t0 is None:
+            return
+
+        # Error messages from chkCan are identified by the ``error`` key.
+        if parsed.get('error'):
+            # Print a concise error description to the console.
+            print(f"{time.time():.2f} [CAN ERROR] Type={parsed.get('type')}, Code={parsed.get('code')}, Msg={parsed.get('msg')}")
             return
 
         ts      = round((time.time() - self._t0) * 1000, 2)
