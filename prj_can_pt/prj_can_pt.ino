@@ -49,6 +49,7 @@ const char* ND_NAME = "B";
 // -- Sensor State Thresholds
 #define MIN_FLT_V 0.09
 #define MAX_FLT_V 3.19
+constexpr float STUCK_DELTA_THRESHOLD = 0.01f; 
 
 // -- Sensor State Codification
 // ------------------------------------------------------------------
@@ -363,29 +364,31 @@ static short calcSenState(float vOut) {
   if (vOut < MIN_FLT_V) return STATE_DISCONNECTED;
   if (vOut > MAX_FLT_V) return STATE_SHORT_CIRCUIT;
 
-  // Statistical Analysis of the Moving Target Array
-  int mx_eq_cnt = 0;
+  // Single-pass statistical extraction - O(N)
   float mean = filterSum / FILTER_SIZE;
   float sumSqDiff = 0.0f;
+  float minVal = filterBuf[0];
+  float maxVal = filterBuf[0];
 
   for (uint8_t i = 0; i < FILTER_SIZE; i++) {
-    int count = 0;
-    for (uint8_t j = 0; j < FILTER_SIZE; j++) {
-      if (abs(filterBuf[i] - filterBuf[j]) < 0.000001f) {
-        count++;
-      }
-    }
-    if (count > mx_eq_cnt) {
-      mx_eq_cnt = count;
-    }
+    float val = filterBuf[i];
 
-    float diff = filterBuf[i] - mean;
+    if (val < minVal) minVal = val;
+    if (val > maxVal) maxVal = val;
+
+    float diff = val - mean;
     sumSqDiff += diff * diff;
   }
 
-  if (mx_eq_cnt > (FILTER_SIZE * 0.9f)) return STATE_STUCK;
+  // 1. Stuck Detection: Peak-to-Peak Delta Window
+  // Compares absolute signal span against a tight millivolt noise floor.
+  // Set to 0.0f for an absolute digital freeze, or a tiny fraction (e.g., 0.02mV) 
+  // if tracking operational DAC/ADC signal freeze with minimal thermal noise.
+  if ((maxVal - minVal) < STUCK_DELTA_THRESHOLD) {
+    return STATE_STUCK;
+  }
 
-  // Variance calculation for high-frequency runtime anomaly checks
+  // 2. Variance Calculation for High-Frequency Noise Anomaly Check
   float variance = sumSqDiff / FILTER_SIZE;
   if (variance > 1500.0f) return STATE_NOISY;
 
