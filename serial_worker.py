@@ -130,7 +130,11 @@ class SerialWorker(QtCore.QObject):
                     parsed = dp.parse_line(raw)
                     if parsed:
                         self.data_ready.emit(parsed)
+                    else:
+                        # Emit raw info signal and also print to console for debugging
+                        self.raw_info.emit(raw)
                 else:
+                    # Emit raw info signal and also print to console for debugging
                     self.raw_info.emit(raw)
         except (serial.SerialException, OSError) as e:
             self._poll_timer.stop()

@@ -8,30 +8,46 @@ TELEMETRY_PATTERN = re.compile(
     r"!(TX|RX),([0-9A-Fa-f]+),([-\d\.]+),([0-9A-Fa-f]+),([0-9A-Fa-f]+)"
 )
 
-def parse_line(line: str) -> dict | None:
-    """Parse UART output from can_heartbeat_float and extract values."""
-    if line.startswith("!"):
-        m = TELEMETRY_PATTERN.match(line)
-        if not m:
-            return None
-        direction, can_id_hex, val_str, l_alarm_hex, h_alarm_hex = m.groups()
-        can_id = f"0x{can_id_hex}"
-        try:
-            val_f = float(val_str)
-        except ValueError:
-            return None
-        
-        l_alarm = (l_alarm_hex == "FF")
-        h_alarm = (h_alarm_hex == "FF")
+ERROR_PATTERN = re.compile(
+    r"!ERR,([A-Z]+),([0-9A-Fa-f]+),?(.*)?"
+)
 
-        return {
-            'id': can_id,
-            'dir': direction,
-            'temp_f': val_f,
-            'temp_c': to_celsius(val_f),
-            'high_alarm': h_alarm,
-            'low_alarm': l_alarm
-        }
+def parse_line(line: str) -> dict | None:
+    """Parse UART output from can_heartbeat_float and extract values.
+    Handles telemetry lines (starting with '!') and error lines ("!ERR,...")."""
+    if line.startswith("!"):
+        # Try telemetry pattern first
+        m = TELEMETRY_PATTERN.match(line)
+        if m:
+            direction, can_id_hex, val_str, l_alarm_hex, h_alarm_hex = m.groups()
+            can_id = f"0x{can_id_hex}"
+            try:
+                val_f = float(val_str)
+            except ValueError:
+                return None
+            
+            l_alarm = (l_alarm_hex == "FF")
+            h_alarm = (h_alarm_hex == "FF")
+
+            return {
+                'id': can_id,
+                'dir': direction,
+                'temp_f': val_f,
+                'temp_c': to_celsius(val_f),
+                'high_alarm': h_alarm,
+                'low_alarm': l_alarm
+            }
+        # If not telemetry, try error pattern
+        m_err = ERROR_PATTERN.match(line)
+        if m_err:
+            err_type, err_code, err_msg = m_err.groups()
+            return {
+                'error': True,
+                'type': err_type,
+                'code': err_code,
+                'msg': err_msg or ''
+            }
+        return None
 
     m = CAN_LOG_PATTERN.search(line)
     if not m:
