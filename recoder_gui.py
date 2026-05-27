@@ -1,11 +1,13 @@
 import re
 import csv
+import math
 import time
-import collections
 from pathlib import Path
 from datetime import datetime
 
 import serial.tools.list_ports
+from NodeStore import NodeStore
+from NodeWidget import NodeWidget
 from PyQt6 import QtWidgets, QtCore, QtGui
 
 import matplotlib
@@ -18,267 +20,18 @@ import matplotlib.animation as animation
 
 import recoder_processing as dp
 from serial_worker import SerialWorker
+from constants import (
+    BAUDRATES,
+    MAX_SAMPLES,
+    TEMP_MAX_F,
+    TEMP_MIN_F,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-TEMP_MAX_F  = 200
-TEMP_MIN_F  = 10
-MAX_SAMPLES = 1_000
-BAUDRATES   = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600]
-
 _ESP_VIDS     = {0x303A, 0x10C4, 0x1A86}
 _PORT_PATTERN = re.compile(r"ttyACM\d+|ttyUSB\d+|cu\.usbserial|cu\.SLAB|COM\d+")
-
-
-# ===========================================================================
-# RadialGauge — Vector Data Visualization Component
-# ===========================================================================
-class RadialGauge(QtWidgets.QWidget):
-    """
-    Sleek, circular progress gauge for temperature visualization.
-    """
-    def __init__(self, min_val: float, max_val: float, accent_color: str, parent=None):
-        super().__init__(parent)
-        self.min_val = min_val
-        self.max_val = max_val
-        self.value = min_val
-        self.accent_color = QtGui.QColor(accent_color)
-        # Flag that indicates the last input was out-of-bounds and should
-        # cause the gauge to render fully filled in the critical color.
-        self._out_of_bounds = False
-        self.setMinimumSize(80, 80)
-        self.setMaximumSize(110, 110)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Expanding)
-
-    def set_value(self, value: float):
-        # Detect out-of-range inputs. If the provided value is outside the
-        # allowed span, mark as out-of-bounds and render as fully filled.
-        if value < self.min_val or value > self.max_val:
-            self._out_of_bounds = True
-            # visually fill the gauge completely
-            self.value = self.max_val
-        else:
-            self._out_of_bounds = False
-            self.value = max(self.min_val, min(self.max_val, value))
-        self.update()
-
-    def set_accent_color(self, color_str: str):
-        target_color = QtGui.QColor(color_str)
-        # Always assign and request a repaint to ensure visual state stays in sync
-        self.accent_color = target_color
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-
-        rect = self.rect().adjusted(6, 6, -6, -6)
-        size = min(rect.width(), rect.height())
-        square_rect = QtCore.QRectF(
-            rect.center().x() - size / 2,
-            rect.center().y() - size / 2,
-            size,
-            size
-        )
-
-        # Dynamic theme-aware background track color
-        track_color = self.palette().color(QtGui.QPalette.ColorRole.Midlight)
-        
-        pen = QtGui.QPen()
-        pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
-        pen.setWidth(7)
-
-        # Draw Background Track Arc
-        pen.setColor(track_color)
-        painter.setPen(pen)
-        painter.drawArc(square_rect, 150 * 16, -240 * 16)
-
-        # Calculate range fill percent
-        span = self.max_val - self.min_val
-        percentage = (self.value - self.min_val) / span if span > 0 else 0.0
-        active_span = -240 * percentage * 16
-
-        # Draw Active Visual Value Track
-        if self._out_of_bounds:
-            # Critical deep-red override when input was out-of-range
-            pen.setColor(QtGui.QColor("#8B0000"))
-        else:
-            pen.setColor(self.accent_color)
-        painter.setPen(pen)
-        painter.drawArc(square_rect, 150 * 16, int(active_span))
-
-
-# ===========================================================================
-# NodeStore — data model
-# ===========================================================================
-class NodeStore:
-    """
-    Manages per-node circular buffers and color assignment.
-    """
-    def __init__(self):
-        self.data: dict[str, dict] = {}
-
-    def color_for(self, node_id: str) -> str:
-        colors = [
-            "#F44336", "#2196F3", "#4CAF50", "#9C27B0", 
-            "#FF9800", "#00BCD4", "#E91E63", "#3F51B5", 
-            "#009688", "#673AB7", "#03A9F4"
-        ]
-        return colors[hash(node_id) % len(colors)]
-
-    def get_or_create(self, node_id: str) -> tuple[dict, bool]:
-        """Returns (buffers_dict, is_new). Creates buffers on first call."""
-        if node_id in self.data:
-            return self.data[node_id], False
-        self.data[node_id] = {
-            "ts":     collections.deque(maxlen=MAX_SAMPLES),
-            "temp_f": collections.deque(maxlen=MAX_SAMPLES),
-            "temp_c": collections.deque(maxlen=MAX_SAMPLES),
-        }
-        return self.data[node_id], True
-
-    def append(self, node_id: str, ts: float, temp_f: float, temp_c: float):
-        """Append a new telemetry reading to the specified node's buffer."""
-        node = self.data[node_id]
-        node["ts"].append(ts)
-        node["temp_f"].append(temp_f)
-        node["temp_c"].append(temp_c)
-
-    def clear(self):
-        """Clear all recorded data buffers across all nodes."""
-        self.data.clear()
-
-    def __iter__(self):
-        return iter(self.data.items())
-
-
-# ===========================================================================
-# NodeWidget — view
-# ===========================================================================
-class NodeWidget(QtWidgets.QFrame):
-    """
-    Card showing live telemetry, interactive gauge, and alarm state for one CAN node.
-    Fully dark/light-theme compatible and vertically adaptive.
-    """
-    _BADGE_STYLE = (
-        "color: white; border-radius: 11px; min-width: 22px; max-width: 22px;"
-        " min-height: 22px; max-height: 22px; font-weight: bold; font-size: 10px;"
-    )
-
-    def __init__(self, node_id: str, color: str, display_index: int):
-        super().__init__()
-        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.setMinimumSize(250, 130)
-        self.setMaximumSize(280, 150)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Preferred)
-
-        self.base_color = color
-        qc = QtGui.QColor(color)
-        bg_blend = f"rgba({qc.red()}, {qc.green()}, {qc.blue()}, 0.05)"
-        text_color = self.palette().color(QtGui.QPalette.ColorRole.WindowText).name()
-
-        self.setStyleSheet(
-            f"NodeWidget {{ border: 2px solid {color}; border-radius: 8px;"
-            f" background-color: {bg_blend}; }}"
-        )
-
-        # Primary Horizontal Separation: Left Content vs Right Gauge
-        main_layout = QtWidgets.QHBoxLayout(self)
-        main_layout.setContentsMargins(10, 8, 10, 8)
-        main_layout.setSpacing(6)
-
-        # Left Column Layout (Header, Telemetry text, Alarms)
-        left_vbox = QtWidgets.QVBoxLayout()
-        left_vbox.setSpacing(2)
-
-        # Title/ID Area — use a sequential display index rather than raw ID
-        self.display_index = display_index
-        self.lbl_title = QtWidgets.QLabel(f"Node {self.display_index}")
-        self.lbl_title.setStyleSheet(f"color: {text_color}; font-weight: bold; font-size: 13px; background: transparent;")
-        self.lbl_sub_id = QtWidgets.QLabel(f"ID: {node_id}")
-        self.lbl_sub_id.setStyleSheet("color: gray; font-size: 10px; background: transparent;")
-        
-        left_vbox.addWidget(self.lbl_title)
-        left_vbox.addWidget(self.lbl_sub_id)
-        # (state label lives in the ribbon below)
-
-        # Values Block
-        self.lbl_temp_f = QtWidgets.QLabel("-- °F")
-        self.lbl_temp_f.setStyleSheet(f"color: {color}; font-size: 18px; font-weight: bold; background: transparent;")
-        self.lbl_temp_c = QtWidgets.QLabel("-- °C")
-        self.lbl_temp_c.setStyleSheet("font-size: 12px; color: gray; background: transparent;")
-        
-        left_vbox.addWidget(self.lbl_temp_f)
-        left_vbox.addWidget(self.lbl_temp_c)
-        left_vbox.addStretch()
-
-        # Alarm Ribbon
-        status_ribbon = QtWidgets.QHBoxLayout()
-        status_ribbon.setSpacing(4)
-
-        self.lbl_low = QtWidgets.QLabel("L")
-        self.lbl_low.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_low.setStyleSheet(self._BADGE_STYLE + "background-color: #757575;")
-
-        self.lbl_high = QtWidgets.QLabel("H")
-        self.lbl_high.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_high.setStyleSheet(self._BADGE_STYLE + "background-color: #757575;")
-
-        status_ribbon.addWidget(self.lbl_low)
-        status_ribbon.addWidget(self.lbl_high)
-
-        # Small state label (original): shown in the ribbon when a firmware
-        # diagnostic state is present.
-        self.lbl_state = QtWidgets.QLabel("")
-        self.lbl_state.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_state.setStyleSheet(
-            "font-size: 9px; font-weight: bold; color: #FFFFFF;"
-            " background-color: #D32F2F; border-radius: 4px; padding: 2px 4px;"
-        )
-        self.lbl_state.hide()
-        status_ribbon.addWidget(self.lbl_state)
-        status_ribbon.addStretch(1)
-        left_vbox.addLayout(status_ribbon)
-
-        # Right Column Content (The Gauge centered cleanly)
-        gauge_vbox = QtWidgets.QVBoxLayout()
-        gauge_vbox.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.gauge = RadialGauge(TEMP_MIN_F, TEMP_MAX_F, color, self)
-        gauge_vbox.addWidget(self.gauge)
-
-        main_layout.addLayout(left_vbox, stretch=1)
-        main_layout.addLayout(gauge_vbox, stretch=0)
-
-    def update_data(self, temp_f: float, temp_c: float, high_alarm: bool, low_alarm: bool, state: str | None = None):
-        """Update metrics UI states, forcing gauge colors red on disconnect or alarm states."""
-        self.lbl_temp_f.setText(f"{temp_f:.1f} °F")
-        self.lbl_temp_c.setText(f"{temp_c:.1f} °C")
-        self.gauge.set_value(temp_f)
-
-        # Extract context validation strings cleanly
-        normalized_state = str(state).strip().upper() if state else ""
-        is_bad_state = normalized_state and normalized_state not in ("OK", "NORMAL", "CONNECTED", "NONE")
-
-        # Explicitly shift accent paths to alert red on failure conditions
-        if is_bad_state or high_alarm or low_alarm:
-            # Deep red for critical/fault states (e.g., DISCONNECTED, SHORT_CIRCUIT, STUCK)
-            self.gauge.set_accent_color("#8B0000")  # Dark red gauge arc
-            self.lbl_temp_f.setStyleSheet("color: #8B0000; font-size: 18px; font-weight: bold; background: transparent;")
-        else:
-            self.gauge.set_accent_color(self.base_color)
-            self.lbl_temp_f.setStyleSheet(f"color: {self.base_color}; font-size: 18px; font-weight: bold; background: transparent;")
-
-        self.lbl_high.setStyleSheet(self._BADGE_STYLE + f"background-color: {'#F44336' if high_alarm else '#757575'};")
-        self.lbl_low.setStyleSheet(self._BADGE_STYLE + f"background-color: {'#2196F3' if low_alarm else '#757575'};")
-        
-        if state and state.strip():
-            s = state.strip().upper()
-            self.lbl_state.setText(s)
-            self.lbl_state.show()
-        else:
-            self.lbl_state.hide()
-
 
 # ===========================================================================
 # App — controller / main window
