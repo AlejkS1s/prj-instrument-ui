@@ -12,6 +12,7 @@ class NodeWidget(W.QFrame):
         self.setFrameShape(W.QFrame.Shape.StyledPanel)
         self.setSizePolicy(W.QSizePolicy.Policy.Preferred, W.QSizePolicy.Policy.Expanding)
 
+        self.setMinimumSize(300, 220)
         pal = self.palette()
         qc = G.QColor(color)
         self.base_color  = color
@@ -25,15 +26,15 @@ class NodeWidget(W.QFrame):
         )
 
         ml = W.QVBoxLayout(self)
-        ml.setContentsMargins(10, 8, 10, 8)
-        ml.setSpacing(6)
+        ml.setContentsMargins(8, 6, 8, 6)
+        ml.setSpacing(4)
 
         # --- Header row ---
         hr = W.QHBoxLayout()
-        hr.setSpacing(8)
+        hr.setSpacing(6)
 
         id_box = W.QVBoxLayout()
-        id_box.setSpacing(2)
+        id_box.setSpacing(1)
 
         self.display_index = display_index
         self.lbl_title = W.QLabel(f"Node {display_index}")
@@ -49,10 +50,9 @@ class NodeWidget(W.QFrame):
 
         id_box.addWidget(self.lbl_title)
         id_box.addWidget(self.lbl_sub_id)
-        id_box.addStretch()
 
         ah = W.QHBoxLayout()
-        ah.setSpacing(4)
+        ah.setSpacing(2)
         self.light_low  = AlarmLight("LOW",  "#2196F3", self)
         self.light_high = AlarmLight("HIGH", "#F44336", self)
         ah.addWidget(self.light_low,  alignment=C.Qt.AlignmentFlag.AlignRight)
@@ -72,21 +72,22 @@ class NodeWidget(W.QFrame):
         self.lbl_state = W.QLabel("")
         self.lbl_state.setAlignment(C.Qt.AlignmentFlag.AlignCenter)
         sf = G.QFont(self.font())
-        sf.setPointSizeF(ps * 0.85)
+        sf.setPointSizeF(ps * 0.75)
         sf.setBold(True)
         sf.setCapitalization(G.QFont.Capitalization.AllUppercase)
         self.lbl_state.setFont(sf)
         self.lbl_state.setStyleSheet(
-            "color: #FFFFFF; background-color: #D32F2F; border-radius: 4px; padding: 2px 4px;"
+            "color: #FFFFFF; background-color: #D32F2F; border-radius: 4px; padding: 2px 2px;"
         )
-        srw.setMinimumHeight(G.QFontMetrics(sf).height() + 10)
+        srw.setMinimumHeight(G.QFontMetrics(sf).height() + 5)
+        self.srw = srw
         self.lbl_state.setHidden(True)
         sr.addWidget(self.lbl_state)
         sr.addStretch(1)
 
         # --- Gauge ---
         gc = W.QHBoxLayout()
-        gc.setContentsMargins(5, 0, 5, 0)
+        gc.setContentsMargins(2, 0, 2, 0)
         self.gauge = RadialGauge(TEMP_MIN_F, TEMP_MAX_F, LOW_TEMP_THRESH_F, HIGH_TEMP_THRESH_F, parent=self)
         gc.addWidget(self.gauge, stretch=1)
 
