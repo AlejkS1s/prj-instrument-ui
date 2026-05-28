@@ -4,7 +4,7 @@ from PyQt6 import QtGui as G, QtWidgets as W, QtCore as C
 class AlarmLight(W.QWidget):
     def __init__(self, label_text: str, active_color: str, parent=None):
         super().__init__(parent)
-        self.setFixedSize(50, 70)
+        self.setFixedSize(40, 50)
         self.label_text = label_text
         self.active_color = G.QColor(active_color)
         self.is_active = False
@@ -23,7 +23,7 @@ class AlarmLight(W.QWidget):
         bc  = pal.color(G.QPalette.ColorRole.Mid)
         off = pal.color(G.QPalette.ColorRole.Dark)
 
-        cx, cy, r = self.width() / 2, 25, 15
+        cx, cy, r = self.width() / 2, 20, 12
         rect = C.QRectF(cx - r, cy - r, r * 2, r * 2)
 
         col = self.active_color if self.is_active else off

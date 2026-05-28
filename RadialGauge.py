@@ -78,13 +78,13 @@ class _R:
 
 
     # Needle
-    HUB_R            = 0.048   # Pivot circle radius
-    HUB_HOLE_RATIO   = 0.400   # Hollow-hole radius as fraction of HUB_R
-    NEEDLE_BASE_HALF = 0.035   # Half-width at pivot end
-    NEEDLE_TIP_HALF  = 0.010   # Half-width and tip-cap radius at tip end
+    HUB_R            = 0.05   # Pivot circle radius
+    HUB_HOLE_RATIO   = 0.430   # Hollow-hole radius as fraction of HUB_R
+    NEEDLE_BASE_HALF = 0.038   # Half-width at pivot end
+    NEEDLE_TIP_HALF  = 0.013   # Half-width and tip-cap radius at tip end
     NEEDLE_REACH     = 1.0     # Fraction of r_in the tip reaches
-    NEEDLE_BORDER_W  = 1.5     # Pixel width of the needle outline
-    HALO_R           = 0.065   # Translucent halo disc radius
+    NEEDLE_BORDER_W  = 1.6     # Pixel width of the needle outline
+    HALO_R           = 0.068   # Translucent halo disc radius
 
     # Centre text block
     TEXT_Y_OFFSET    = 0.180   # cy + sz * Y_OFFSET = top of primary rect
@@ -132,7 +132,7 @@ class RadialGauge(QtWidgets.QWidget):
         self.setMinimumSize(_R.MIN_W_SIZE, _R.MIN_H_SIZE)
 
     def set_value(self, val_f: float, val_c: float | None = None) -> None:
-        self._value = max(self.min_val, min(self.max_val, val_f))
+        self._value = val_f
         self._temp_c = val_c if val_c is not None else (val_f - 32) * 5/9
         self.update()
 
@@ -269,15 +269,15 @@ class RadialGauge(QtWidgets.QWidget):
         self._draw_track(p, rect, sw)
         # 2. Track
         self._draw_continuous_bar(p, rect, sw)
-        # 3. Threshold Marks
-        self._draw_threshold_marks(p, cx, cy, r_out, sz)
-        # 4. Needle — draw so the tip overlaps the centreline of the track
+        # 3. Needle — draw so the tip overlaps the centreline of the track
         r_mid = (r_out + r_in) / 2.0
         self._draw_needle(p, cx, cy, r_mid, sz, color_midLight, color_base, color_dark)
-        # 5. Labels
+        # 4. Labels
         self._draw_labels(p, cx, cy, r_out, sz)
-        # 6. Chrome (overlapping labels and ticks)
+        # 5. Chrome (overlapping labels and ticks)
         self._draw_scale_ticks(p, cx, cy, r_out, sz)
+        # 6. Threshold Marks
+        self._draw_threshold_marks(p, cx, cy, r_out, sz)
         # 7. Center Text value + sub-label
         self._draw_center_text(p, cx, cy, sz)
 
@@ -292,7 +292,7 @@ class RadialGauge(QtWidgets.QWidget):
             self, p: QtGui.QPainter,
             rect: QtCore.QRectF, sw: int) -> None:
         """Draws the filled progress bar with gradient logic."""
-        pct = self._pct(self._value)
+        pct = max(0.0, min(1.0, self._pct(self._value)))
         if pct <= 0 or self._is_fault: return
 
         # For a truly continuous look, we use a gradient brush on the pen
@@ -394,7 +394,7 @@ class RadialGauge(QtWidgets.QWidget):
             )
 
     def _draw_needle(self, p, cx, cy, r, sz, color_body, color_border,color_halo):
-        angle = self._val_to_angle(self._value)
+        angle = self._val_to_angle(max(self.min_val, min(self.max_val, self._value)))
         rad = math.radians(angle)
         px, py = math.sin(rad), math.cos(rad)
         
