@@ -3,7 +3,7 @@
 # ===========================================================================
 import collections
 
-from constants import MAX_SAMPLES
+from config import MAX_SAMPLES
 
 
 class NodeStore:

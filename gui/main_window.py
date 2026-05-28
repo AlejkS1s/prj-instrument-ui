@@ -6,8 +6,8 @@ from pathlib import Path
 from datetime import datetime
 
 import serial.tools.list_ports
-from NodeStore import NodeStore
-from NodeWidget import NodeWidget
+from gui.NodeStore import NodeStore
+from gui.node_widget import NodeWidget
 from PyQt6 import QtWidgets, QtCore, QtGui
 
 import matplotlib
@@ -18,9 +18,9 @@ from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToo
 import matplotlib.ticker as ticker
 import matplotlib.animation as animation
 
-import recoder_processing as dp
-from serial_worker import SerialWorker
-from constants import (
+import serial.serial_parser as dp
+from serial.serial_worker import SerialWorker
+from config import (
     BAUDRATES,
     MAX_SAMPLES,
     TEMP_MAX_F,

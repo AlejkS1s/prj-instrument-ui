@@ -1,8 +1,8 @@
 from PyQt6 import QtWidgets as W, QtGui as G, QtCore as C
 
-from AlarmLight import AlarmLight
-from RadialGauge import RadialGauge
-from constants import HIGH_TEMP_THRESH_F, LOW_TEMP_THRESH_F, TEMP_MAX_F, TEMP_MIN_F
+from gui.AlarmLight import AlarmLight
+from gui.radial_gauge import RadialGauge
+from config import HIGH_TEMP_THRESH_F, LOW_TEMP_THRESH_F, TEMP_MAX_F, TEMP_MIN_F
 
 
 class NodeWidget(W.QFrame):

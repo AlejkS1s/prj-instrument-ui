@@ -1,6 +1,6 @@
 import sys
 from PyQt6 import QtWidgets
-from recoder_gui import App
+from gui.main_window import App
 
 def main():
     """
