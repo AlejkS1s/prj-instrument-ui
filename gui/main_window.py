@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 import serial.tools.list_ports
-from gui.NodeStore import NodeStore
+from core.node_store import NodeStore
 from gui.node_widget import NodeWidget
 from PyQt6 import QtWidgets, QtCore, QtGui
 
@@ -18,8 +18,8 @@ from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToo
 import matplotlib.ticker as ticker
 import matplotlib.animation as animation
 
-import serial.serial_parser as dp
-from serial.serial_worker import SerialWorker
+import core.serial_parser as dp
+from core.serial_worker import SerialWorker as SerWorker
 from config import (
     BAUDRATES,
     MAX_SAMPLES,
@@ -94,7 +94,7 @@ class App(QtWidgets.QMainWindow):
         self.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint)
 
         self._store         = NodeStore()
-        self._worker: SerialWorker | None = None
+        self._worker: SerWorker | None = None
         self._thread: QtCore.QThread | None = None
         self._t0: float | None = None
 
@@ -355,7 +355,7 @@ class App(QtWidgets.QMainWindow):
             return
 
         self._thread = QtCore.QThread(self)
-        self._worker = SerialWorker(port, baud)
+        self._worker = SerWorker(port, baud)
         self._worker.moveToThread(self._thread)
 
         # Worker signals → main thread slots (auto queued connections across threads)

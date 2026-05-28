@@ -13,7 +13,7 @@ Thread model:
 import serial
 from PyQt6 import QtCore
 
-import serial.serial_parser as dp
+import core.serial_parser as dp
 
 
 class SerialWorker(QtCore.QObject):
