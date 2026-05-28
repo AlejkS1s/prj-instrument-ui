@@ -28,7 +28,7 @@ class GaugePalette:
     high_end:     str   = "#FF0000"
 
     # Fault / alarm state  (solid arc colour)
-    fault_primary: str   = "#FF6F6F"
+    fault_primary: str   = "#F95252"
 
     # Threshold tick marks
     mark_low:      str   = "#2196F3"
@@ -73,7 +73,7 @@ class _R:
     LABEL_RECT_H     = 0.090   # text bounding rect height
     LABEL_COUNT      = 7       # number of labels, evenly spaced (including endpoints)
 
-    FONT_LABEL       = 0.045
+    FONT_LABEL       = 0.05
     FONT_LABEL_MIN   = 6       # pt floor — prevents < 1 pt at tiny sizes
 
 
@@ -90,12 +90,12 @@ class _R:
     TEXT_Y_OFFSET    = 0.180   # cy + sz * Y_OFFSET = top of primary rect
     TEXT_MAIN_W      = 0.500
     TEXT_MAIN_H      = 0.140
-    FONT_MAIN        = 0.060
+    FONT_MAIN        = 0.070
 
     TEXT_SUB_GAP     = 0.125   # additional offset below TEXT_Y_OFFSET
     TEXT_SUB_W       = 0.420
     TEXT_SUB_H       = 0.100
-    FONT_SUB         = 0.050
+    FONT_SUB         = 0.060
 
     MIN_W_SIZE         = 200
     MIN_H_SIZE         = 150
