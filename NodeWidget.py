@@ -3,6 +3,7 @@
 # ===========================================================================
 from PyQt6 import QtWidgets, QtGui, QtCore
 
+from AlarmLight import AlarmLight
 from RadialGauge import RadialGauge
 from constants import HIGH_TEMP_THRESH_F, LOW_TEMP_THRESH_F, TEMP_MAX_F, TEMP_MIN_F
 
@@ -28,12 +29,15 @@ class NodeWidget(QtWidgets.QFrame):
             f" background-color: {self.bg_blend}; }}"
         )
 
-        # Primary Horizontal Separation: Left Content vs Right Gauge
+        # Primary Vertical Stack: Header row, gauge row, status ribbon
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(10, 8, 10, 8)
         main_layout.setSpacing(6)
 
-        # Left Column Layout (Header, Telemetry text, Alarms)
+        # Header Row: Identifier block on the left, alarm indicators on the right
+        header_row = QtWidgets.QHBoxLayout()
+        header_row.setSpacing(8)
+
         identifier_vbox = QtWidgets.QVBoxLayout()
         identifier_vbox.setSpacing(2)
 
@@ -59,20 +63,31 @@ class NodeWidget(QtWidgets.QFrame):
 
         identifier_vbox.addStretch()
 
+        alarm_hbox = QtWidgets.QHBoxLayout()
+        alarm_hbox.setSpacing(4)
+
+        # Alarm indicators are grouped together so they stay aligned with the header.
+        self.light_low = AlarmLight("LOW", "#2196F3", self) # Blue for low
+        alarm_hbox.addWidget(self.light_low, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+
+        self.light_high = AlarmLight("HIGH", "#F44336", self) # Red for high
+        alarm_hbox.addWidget(self.light_high, alignment=QtCore.Qt.AlignmentFlag.AlignRight)
+
+        header_row.addLayout(identifier_vbox)
+        header_row.addStretch(1)
+        header_row.addLayout(alarm_hbox)
+
         #  ---------------------------------
 
-        # Alarm Ribbon
-        status_ribbon = QtWidgets.QHBoxLayout()
+        # Status Ribbon
+        status_ribbon_widget = QtWidgets.QWidget(self)
+        status_ribbon_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        status_ribbon = QtWidgets.QHBoxLayout(status_ribbon_widget)
+        status_ribbon.setContentsMargins(0, 0, 0, 0)
         status_ribbon.setSpacing(4)
-
-        self.lbl_low = QtWidgets.QLabel("L")
-        self.lbl_low.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-        self.lbl_high = QtWidgets.QLabel("H")
-        self.lbl_high.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-        status_ribbon.addWidget(self.lbl_low)
-        status_ribbon.addWidget(self.lbl_high)
 
         # Label for optional state text (e.g. "DISCONNECTED")
         self.lbl_state = QtWidgets.QLabel("")
@@ -80,28 +95,31 @@ class NodeWidget(QtWidgets.QFrame):
         lbl_state_font = QtGui.QFont(self.font())
         lbl_state_font.setPointSizeF(ps * 0.85)
         lbl_state_font.setBold(True)
+        lbl_state_font.setCapitalization(QtGui.QFont.Capitalization.AllUppercase)
         self.lbl_state.setFont(lbl_state_font)
         
-        self.lbl_state.setStyleSheet(
-             " background-color: #D32F2F; border-radius: 4px; padding: 2px 4px;"
-        )
-        self.lbl_state.hide()
+        self.lbl_state.setStyleSheet("color: #FFFFFF; background-color: #D32F2F; border-radius: 4px; padding: 2px 4px;")
+
+        state_font_metrics = QtGui.QFontMetrics(lbl_state_font)
+        status_ribbon_widget.setMinimumHeight(state_font_metrics.height() + 10)
+
+        self.lbl_state.setHidden(True)
         status_ribbon.addWidget(self.lbl_state)
         status_ribbon.addStretch(1)
 
         # -------------------------- Gauge Area --------------------------
 
-        gauge_vbox = QtWidgets.QVBoxLayout()
-        gauge_vbox.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
+        gauge_container = QtWidgets.QHBoxLayout()
+        gauge_container.setContentsMargins(5, 0, 5, 0)
+
+        # Gauge (Center)
         self.gauge = RadialGauge(TEMP_MIN_F, TEMP_MAX_F, LOW_TEMP_THRESH_F, HIGH_TEMP_THRESH_F, parent=self)
-        gauge_vbox.addWidget(self.gauge, stretch=1)
+        gauge_container.addWidget(self.gauge, stretch=1)
 
-        self._last_high_alarm = False
-        self._last_low_alarm = False
-
-        main_layout.addLayout(identifier_vbox)
-        main_layout.addLayout(gauge_vbox, stretch=1)
-        main_layout.addLayout(status_ribbon)
+        # Add to main layout
+        main_layout.addLayout(header_row)
+        main_layout.addLayout(gauge_container, stretch=1)
+        main_layout.addWidget(status_ribbon_widget)
 
     def resizeEvent(self, event: QtGui.QResizeEvent):
         super().resizeEvent(event)
@@ -111,14 +129,15 @@ class NodeWidget(QtWidgets.QFrame):
         self.gauge.set_value(temp_f)
 
         is_bad_state = True if state else False
+        self.light_low.set_active(low_alarm)
+        self.light_high.set_active(high_alarm)
 
         self.gauge.set_fault_state(is_bad_state)
-        self._last_high_alarm = high_alarm
-        self._last_low_alarm = low_alarm
 
         if state and state.strip():
             s = state.strip().upper()
             self.lbl_state.setText(s)
-            self.lbl_state.show()
+            self.lbl_state.setHidden(False)
         else:
-            self.lbl_state.hide()
+            self.lbl_state.setText("")
+            self.lbl_state.setHidden(True)
